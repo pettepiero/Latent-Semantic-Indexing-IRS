@@ -4,6 +4,7 @@
 import os
 import pandas as pd
 import numpy as np
+from numpy.linalg import norm
 from collections import Counter
 import string
 
@@ -50,6 +51,7 @@ del sw
 def clean_text(headline):
     le = WordNetLemmatizer()
     word_tokens = word_tokenize(headline)
+    word_tokens = [w.lower() for w in word_tokens]
     tokens = [le.lemmatize(w) for w in word_tokens if w not in stop_words]
     cleaned_text = " ".join(tokens)
     return cleaned_text
@@ -61,18 +63,19 @@ data.drop(["Article"], axis=1, inplace=True)
 data["Cleaned content"] = data["Content"].apply(clean_text)
 
 
-# Creating corpus removing punctuation from words and excluding stop words
-# This creates an array where each line contains a tuple composed of:
-#       1. the ID of the document (string)
-#       2. the list of words in that document
+def str_to_lst(sentence):
+    lst = sentence.split()
+    lst = [word.strip(string.punctuation) for word in lst]
+    return lst
 
-corpus2 = []
-for doc in data["Cleaned content"]:
-    list_of_words = [word.strip(string.punctuation) for word in doc.split()]
-    corpus2.append(list_of_words)
 
-data["Listed content"] = corpus2
-del corpus2
+def str_df_to_lst_df(df):
+    df["Listed content"] = df["Cleaned content"].apply(str_to_lst)
+    return df
+
+
+data = str_df_to_lst_df(data)
+
 print("Created dataframe 'data'")
 
 # Now it feels like a good time to make a dictionary of all the words in the corpus
@@ -82,22 +85,22 @@ words = [word for sentence in data["Listed content"] for word in sentence]
 word_counts = Counter(words)
 dictionary = {word: idx for idx, (word, _) in enumerate(word_counts.items())}
 
-print("Created dictionary")
+print(f"Created dictionary of length {len(dictionary)}")
 
 pipe = Pipeline(
     [("count", CountVectorizer(vocabulary=dictionary)), ("tfid", TfidfTransformer())]
 )
-X = pipe.fit_transform(data["Cleaned content"])
-print("Fitted pipeline and obtained X:")
-print(X.toarray())
-
-print(f"pipe.get_feature_names_out(): {pipe.get_feature_names_out()}")
+tfidf = pipe.fit_transform(data["Cleaned content"])
+print(
+    f"Fitted pipeline on 'data['Cleaned content']' and obtained the following tfidf of shape {tfidf.shape}:"
+)
+print(tfidf.toarray())
 
 print("pipe['count'].transform(data['Cleaned content']).toarray()")
 print(pipe["count"].transform(data["Cleaned content"]).toarray())
+print(f"Also learnt the following idf of length {len(pipe['tfid'].idf_)}:")
 idf = pipe["tfid"].idf_
-print(f"pipe['tfid'].idf_ = {idf}")
-
+print(idf)
 
 
 # vectorizer = CountVectorizer(vocabulary=dictionary)
@@ -119,27 +122,26 @@ print(f"pipe['tfid'].idf_ = {idf}")
 # print(idf)
 
 dd = dict(zip(pipe.get_feature_names_out(), idf))
-l = sorted(dd, key=dd.get)
+sorted_dict = sorted(dd, key=dd.get)
 
 
 # Latent Semantic Analysis
 # documentation states that for LSA n_components should be 100
+
 print("\n********************************************************")
 print("Latent Semantic Analysis")
 print("********************************************************\n")
 
 lsa_model = TruncatedSVD(
-    n_components=10, algorithm="randomized", n_iter=10, random_state=42
+    n_components=100, algorithm="randomized", n_iter=10, random_state=42
 )
-lsa_top = lsa_model.fit_transform(X)
+lsa_matrix = lsa_model.fit_transform(tfidf)
 
-print(f"lsa_top:\n {lsa_top}")
-print(f"lsa_top.shape: {lsa_top.shape}")
+print(f"lsa_matrix:\n {lsa_matrix}")
+print(f"lsa_matrix.shape: {lsa_matrix.shape}")
 
 # print(f"tf_transformer.feature_names_in: {tf_transformer.feature_names_in_}")
-print(
-    f"tf_transformer.get_feature_names_out(): {pipe.get_feature_names_out()}"
-)
+print(f"tf_transformer.get_feature_names_out(): {pipe.get_feature_names_out()}")
 
 vocab = pipe.get_feature_names_out()
 
@@ -152,31 +154,58 @@ for i, comp in enumerate(lsa_model.components_):
     print("\n")
 
 
-# # Example: Transforming text into a list of words, excluding stop words
-# def document_to_word_indices(document, dictionary):
-#     return [
-#         dictionary[word]
-#         for word in document
-#         if word in dictionary and word not in stop_words
-#     ]
+def get_query():
+    print("\n********************************************************")
+    # query_str = input("Write your free-text query: ")
+    query_str = "In a NumPy array, each row could represent a document, and columns could represent the index and similarity measure."
+    query = clean_text(query_str)
+    print(f"Your query is: {query}")
+    return query
 
 
-# # Transform each document into a list of word indices
-# documents_as_word_indices = [
-#     document_to_word_indices(doc[1], dictionary) for doc in corpus2
-# ]
+def transform_query(query):
+    query_vector = pipe.transform([query])
+    print(query_vector.toarray().shape)
+    query_lsa = lsa_model.transform(query_vector).reshape(-1)
+    print(f"query_lsa = {query_lsa}")
+    print(f"query_lsa shape = {query_lsa.shape}")
+    return query_lsa
 
-# corpus = corpus2.copy()
-# for i, tpl in enumerate(corpus2):
-#     corpus[i] = (tpl[0], documents_as_word_indices[i])
 
-# # Create document-term matrix
+query = get_query()
+query_v = transform_query(query)
 
-# doc_term = np.empty((len(dictionary), len(documents_as_word_indices)))
 
-# for word in dictionary.values():
-#     for i, doc in enumerate(corpus):
-#         if word in doc[1]:
-#             doc_term[word, i] = 1
-#         else:
-#             doc_term[word, i] = 0
+def cos_similarity(v1, v2):
+    return np.dot(v1, v2) / (norm(v1) * norm(v2))
+
+
+def sim_measures(query_vector, docs_matr):
+    measures = []
+    for doc in docs_matr:
+        sim = cos_similarity(query_vector, doc)
+        measures.append(sim)
+    return measures
+
+
+def ordered_measures(query_vector, docs_matr):
+    measures = sim_measures(query_vector, docs_matr)
+    print(f"\n\nMeasures:\n {measures}\n")
+    scores = {}
+    for i in range(len(measures)):
+        scores[i] = measures[i]
+    print(f"\n\nscores =")
+    print(scores)
+    return dict(sorted(scores.items()))
+
+
+results = sim_measures(query_v, lsa_matrix)
+# indices = list(range(len(results)))
+# res_idx = list(zip(indices, results))
+res_df = pd.DataFrame(data=results)
+#res_df = pd.DataFrame(data=res_idx)
+res_df.columns = ["Similarity measure"]
+# del res_idx
+res_df = res_df.sort_values(by="Similarity measure", ascending=False)
+print(f"\n\ndataframe: {res_df}")
+
