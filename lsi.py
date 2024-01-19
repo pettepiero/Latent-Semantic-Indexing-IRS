@@ -7,8 +7,9 @@ import numpy as np
 from pygtrie import StringTrie
 from numpy.linalg import norm
 from collections import Counter
-from scipy.sparse import csr_matrix, coo_matrix
+from scipy.sparse import csr_matrix, coo_matrix, find, save_npz, load_npz
 import string
+import re
 
 # import Natural Language Toolkit for preprocessing the data
 import nltk
@@ -68,6 +69,23 @@ def remove_contractions(words: list):
     return words_without_contractions
 
 
+def remove_thousands_separator(input_string):
+    """
+    Removes commas used as thousands separators from a string when surrounded by numbers.
+
+    Parameters:
+    - input_string (str): The input string with commas as thousands separators.
+
+    Returns:
+    - str: The input string with appropriate commas removed.
+    """
+    result = ""
+    for i, char in enumerate(input_string):
+        if char == ',' and i > 0 and i < len(input_string) - 1 and input_string[i-1].isdigit() and input_string[i+1].isdigit():
+            continue  # Skip the comma if it's between two digits
+        result += char
+    return result
+
 # Functions to clean the text: 1) Removal of punctuation 2) tokenization, 3) lowercasing, 4) lemmatization
 # lowercasing is necessary because this function is used for the query as well (not in TIME.ALL format)
 # This preprocessing part uses some built-in functions from nltk. The lemmatizer is from WordNet
@@ -91,6 +109,7 @@ data = pd.DataFrame(data=documents_list)
 data.columns = ["Article", "Content"]
 data.drop(["Article"], axis=1, inplace=True)
 data["Cleaned content"] = data["Content"].apply(clean_text)
+data["Cleaned content"] = data["Cleaned content"].apply(remove_thousands_separator)
 
 
 def str_to_lst(sentence):
@@ -122,13 +141,39 @@ print(f"Created dictionary of length {len(cols_dict)}")
 
 
 # needs a cleaned string as parameter
-def count_words(sentence: string):
+# def count_words(sentence: string):
+#     counter_dict = {}
+#     list_of_words = [word for word in sentence.split() if len(word) > 1]
+#     list_of_words = [word.strip(string.punctuation) for word in list_of_words]
+#     list_of_words = [word for word in list_of_words if len(word) > 0]
+#     for word in list_of_words:
+#         counter_dict[word] = counter_dict.get(word, 0) + 1
+
+#     return counter_dict
+
+
+def count_words(sentence):
     counter_dict = {}
-    list_of_words = [word for word in sentence.split() if len(word) > 0]
-    list_of_words = [word.strip(string.punctuation) for word in list_of_words]
-    list_of_words = [word for word in list_of_words if len(word) > 0]
-    for word in list_of_words:
-        counter_dict[word] = counter_dict.get(word, 0) + 1
+    
+    # Split the sentence into words
+    words = re.findall(r'\b[\w-]+\b', sentence)
+
+    # Process each word
+    for word in words:
+        # Remove leading and trailing punctuation
+        word = word.strip(string.punctuation)
+        
+        # Split words containing hyphens
+        if '-' in word:
+            print("found -")
+            subwords = word.split('-')
+            print(f"Splitting {word} in: {subwords} ")
+            for subword in subwords:
+                counter_dict[subword] = counter_dict.get(subword, 0) + 1
+                
+        else:
+            # Count normal words
+            counter_dict[word] = counter_dict.get(word, 0) + 1
 
     return counter_dict
 
@@ -138,8 +183,12 @@ def create_doc_term_matrix(corpus, mapper_dictionary: dict):
     for d_idx, doc in enumerate(corpus):
         counter_dict = count_words(doc)
         for word in counter_dict:
-            word_index = mapper_dictionary[word]
-            nz_tuples.append((d_idx, word_index, counter_dict[word]))
+            if word in mapper_dictionary:
+                word_index = mapper_dictionary[word]
+                nz_tuples.append((d_idx, word_index, counter_dict[word]))
+            # else:
+                # print(f"{word} excluded because not in mapper dictionary")
+            
 
     rows, cols, values = zip(*nz_tuples)
     temp_matrix = coo_matrix((values, (rows, cols)))
@@ -151,21 +200,22 @@ print("\n*********************************")
 print("Creating doc_term matrix")
 doc_t_mtx = create_doc_term_matrix(data["Cleaned content"], cols_dict)
 
-print(doc_t_mtx)
+# print(doc_t_mtx)
 
 
-dict_trie = StringTrie(cols_dict)
-print("********************************")
-print("\nCreated dictionary trie")
-# for key, value in dict_trie.items():
-#     print(f"{key}: {value}")
-print("\n********************************")
+# Saving matrix to file
+save_npz("./matrices/my_matr.npz", doc_t_mtx)
 
-custom_pattern = r"\b[\w\.-]+\b"
+doc_t_mtx = load_npz("./matrices/my_matr.npz")
+
+# custom_pattern = r"\b[\w\.-]+\b"
+custom_pattern = r'\b\w+\b|\b\w+-\w+\b'
 
 pipe = Pipeline(
     [
-        ("count", CountVectorizer(vocabulary=cols_dict, token_pattern=custom_pattern)),
+        ("count", CountVectorizer(vocabulary=cols_dict,
+                                  token_pattern=custom_pattern
+                                  )),
         ("tfid", TfidfTransformer()),
     ]
 )
@@ -179,9 +229,11 @@ tfidf = pipe.fit_transform([" ".join(doc) for doc in data["Listed content"]])
 
 print("pipe['count'].transform(data['Cleaned content'])")
 true_doc_term_matrix = pipe["count"].transform(data["Cleaned content"])
-print(true_doc_term_matrix)
 print(true_doc_term_matrix.toarray().shape)
 
+# Saving true matrix to file
+save_npz("./matrices/true_matr.npz", true_doc_term_matrix)
+true_doc_term_matrix = load_npz("./matrices/true_matr.npz")
 
 print(
     f"\npipe['count'].transform(data['Cleaned content']).nnz = {pipe['count'].transform(data['Cleaned content']).nnz}"
@@ -192,26 +244,24 @@ print(
 print("\n\n Now trying manually to obtain the same count matrix\n")
 
 
-def my_count_vect(vocabulary: StringTrie, corpus: list):
-    indices = []
-    for d_idx, doc in enumerate(corpus):
-        # print(f"Checking document {d_idx}")
-        # print(f"type of doc is {type(doc)}")
-        # print(f"First elements are {doc[:4]}")
-        doc_trie = StringTrie.fromkeys(doc, value=1)
-        for token in vocabulary:
-            print(f"Checking token {token}")
-            if doc_trie.has_key(token):
-                indices.append((d_idx, vocabulary[token]))
-                # print(f"Apparently doc {d_idx} contains '{token}'")
+# def my_count_vect(vocabulary: StringTrie, corpus: list):
+#     indices = []
+#     for d_idx, doc in enumerate(corpus):
+#         # print(f"Checking document {d_idx}")
+#         # print(f"type of doc is {type(doc)}")
+#         # print(f"First elements are {doc[:4]}")
+#         doc_trie = StringTrie.fromkeys(doc, value=1)
+#         for token in vocabulary:
+#             if doc_trie.has_key(token):
+#                 indices.append((d_idx, vocabulary[token]))
+#                 # print(f"Apparently doc {d_idx} contains '{token}'")
 
-    print(f"\nlen(indices) = {len(indices)}")
+#     print(f"\nlen(indices) = {len(indices)}")
 
 
-my_count_vect(vocabulary=dict_trie, corpus=data["Listed content"])
-print(
-    f"\npipe['count'].transform(data['Cleaned content']).nnz = {true_doc_term_matrix.nnz}"
-)
+# print(
+#     f"\npipe['count'].transform(data['Cleaned content']).nnz = {true_doc_term_matrix.nnz}"
+# )
 print(f"doc_t_mtx.nnz = {doc_t_mtx.nnz}")
 
 # print(f"Also learnt the following idf of length {len(pipe['tfid'].idf_)}:")
@@ -220,6 +270,50 @@ idf = pipe["tfid"].idf_
 
 dd = dict(zip(pipe.get_feature_names_out(), idf))
 sorted_dict = sorted(dd, key=dd.get)
+
+
+# Function that prints the sparse matrix differences:
+def print_sparse_matrix_difference(matrix1, matrix2, dictionary: dict):
+    # Find the non-zero elements and their coordinates for both matrices
+    rows1, cols1, values1 = find(matrix1)
+    rows2, cols2, values2 = find(matrix2)
+
+    counter = 0
+
+    # Create sets of tuples representing the coordinates of non-zero elements
+    set1 = set(zip(rows1, cols1))
+    set2 = set(zip(rows2, cols2))
+
+    # Find the differences between the two sets
+    differences = set1.symmetric_difference(set2)
+
+    # Print the differences along with the corresponding values
+    for diff in differences:
+        row, col = diff
+        value1 = matrix1[row, col] if diff in set1 else 0
+        value2 = matrix2[row, col] if diff in set2 else 0
+        if row == 210:
+            print(
+                f"({row}, {col}) \t term '{list(dictionary.keys())[list(dictionary.values()).index(col)]}': \t\t\t\t Matrix1 = {value1},\t Matrix2 = {value2}"
+            )
+        counter += 1
+
+    return counter
+
+
+counts = print_sparse_matrix_difference(true_doc_term_matrix, doc_t_mtx, cols_dict)
+
+print(f"\n#Differences = {counts}")
+print(
+    f"\npipe['count'].transform(data['Cleaned content']).nnz = {true_doc_term_matrix.nnz}"
+)
+print(f"doc_t_mtx.nnz = {doc_t_mtx.nnz}")
+
+print(f"word index of 6,000 = {np.where(pipe["count"].get_feature_names_out() == '6,000')}")
+print(type(pipe["count"].get_feature_names_out()))
+
+
+#**************************************************************************************
 
 # Latent Semantic Analysis
 # documentation states that for LSA n_components should be 100
