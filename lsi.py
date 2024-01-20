@@ -2,6 +2,8 @@
 # Piero Pettenà - January 2024
 
 import os
+import argparse
+import math
 import pandas as pd
 import numpy as np
 from pygtrie import StringTrie
@@ -25,6 +27,34 @@ from sklearn.feature_extraction.text import TfidfTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import normalize
+
+
+# Setting up argparser
+parser = argparse.ArgumentParser(
+    description="Script that creates an information retrieval system with latent semantic indexing."
+)
+parser.add_argument(
+    "-l",
+    "--load_matrices",
+    action="store_true",
+    help="Load matrices from './matrices/'",
+)
+parser.add_argument(
+    "-s",
+    "--sklearn",
+    action="store_true",
+    help="Use scikit-learn library for doc-ter and tfidf matrix",
+)
+parser.add_argument(
+    "-c",
+    "--compare_matrices",
+    action="store_true",
+    help="""Use both scikit-learn library and custom 
+                                                                             methods to create matrices and compare them.""",
+)
+args = parser.parse_args()
+
 
 # Importing the data, preprocessing for TIME.ALL format
 
@@ -81,10 +111,17 @@ def remove_thousands_separator(input_string):
     """
     result = ""
     for i, char in enumerate(input_string):
-        if char == ',' and i > 0 and i < len(input_string) - 1 and input_string[i-1].isdigit() and input_string[i+1].isdigit():
+        if (
+            char == ","
+            and i > 0
+            and i < len(input_string) - 1
+            and input_string[i - 1].isdigit()
+            and input_string[i + 1].isdigit()
+        ):
             continue  # Skip the comma if it's between two digits
         result += char
     return result
+
 
 # Functions to clean the text: 1) Removal of punctuation 2) tokenization, 3) lowercasing, 4) lemmatization
 # lowercasing is necessary because this function is used for the query as well (not in TIME.ALL format)
@@ -105,13 +142,6 @@ def clean_text(headline):
     return cleaned_text
 
 
-data = pd.DataFrame(data=documents_list)
-data.columns = ["Article", "Content"]
-data.drop(["Article"], axis=1, inplace=True)
-data["Cleaned content"] = data["Content"].apply(clean_text)
-data["Cleaned content"] = data["Cleaned content"].apply(remove_thousands_separator)
-
-
 def str_to_lst(sentence):
     lst = sentence.split()
     lst = [word.strip(string.punctuation) for word in lst]
@@ -123,8 +153,20 @@ def str_df_to_lst_df(df):
     return df
 
 
-data = str_df_to_lst_df(data)
+def preprocess_time_data(docs_list):
+    df = pd.DataFrame(data=docs_list)
+    df.columns = ["Article", "Content"]
+    df.drop(["Article"], axis=1, inplace=True)
+    df["Cleaned content"] = df["Content"].apply(clean_text)
+    df["Cleaned content"] = df["Cleaned content"].apply(remove_thousands_separator)
 
+    return df
+
+
+data = preprocess_time_data(docs_list=documents_list)
+
+
+data = str_df_to_lst_df(data)
 print("Created dataframe 'data'\n")
 
 # Now it feels like a good time to make a dictionary of all the words in the corpus
@@ -137,48 +179,41 @@ word_counts = Counter(words)
 cols_dict = {word: idx for idx, (word, _) in enumerate(word_counts.items())}
 
 print(f"Created dictionary of length {len(cols_dict)}")
-# Alternative dict with values = #counts
-
-
-# needs a cleaned string as parameter
-# def count_words(sentence: string):
-#     counter_dict = {}
-#     list_of_words = [word for word in sentence.split() if len(word) > 1]
-#     list_of_words = [word.strip(string.punctuation) for word in list_of_words]
-#     list_of_words = [word for word in list_of_words if len(word) > 0]
-#     for word in list_of_words:
-#         counter_dict[word] = counter_dict.get(word, 0) + 1
-
-#     return counter_dict
 
 
 def count_words(sentence):
     counter_dict = {}
-    
+
     # Split the sentence into words
-    words = re.findall(r'\b[\w-]+\b', sentence)
+    words = re.findall(r"\b[\w-]+\b", sentence)
 
     # Process each word
     for word in words:
         # Remove leading and trailing punctuation
         word = word.strip(string.punctuation)
-        
+
         # Split words containing hyphens
-        if '-' in word:
-            print("found -")
-            subwords = word.split('-')
-            print(f"Splitting {word} in: {subwords} ")
+        if "-" in word:
+            subwords = word.split("-")
             for subword in subwords:
                 counter_dict[subword] = counter_dict.get(subword, 0) + 1
-                
+
         else:
-            # Count normal words
             counter_dict[word] = counter_dict.get(word, 0) + 1
 
     return counter_dict
 
 
-def create_doc_term_matrix(corpus, mapper_dictionary: dict):
+def create_doc_term_matrix(corpus: list, mapper_dictionary: dict):
+    """Calculates document (rows) - term (cols) matrix.
+    Each cell is the number of appearances. Uses a dictionary,
+    so only elements in that dictionary will be counted.
+    Returns a sparse matrix.
+
+    Keyword arguments:
+    corpus -- list of strings (documents)
+    mapper_dictionary -- dict to assign every known word to a column
+    """
     nz_tuples = []
     for d_idx, doc in enumerate(corpus):
         counter_dict = count_words(doc)
@@ -187,133 +222,185 @@ def create_doc_term_matrix(corpus, mapper_dictionary: dict):
                 word_index = mapper_dictionary[word]
                 nz_tuples.append((d_idx, word_index, counter_dict[word]))
             # else:
-                # print(f"{word} excluded because not in mapper dictionary")
-            
+            #     if __debug__:
+            #         #print(f"{word} excluded because not in mapper dictionary")
 
     rows, cols, values = zip(*nz_tuples)
-    temp_matrix = coo_matrix((values, (rows, cols)))
-    # Convert COO matrix to CSR matrix
-    return temp_matrix.tocsr()
+    temporary_matrix = coo_matrix((values, (rows, cols)))
+
+    return temporary_matrix.tocsr()  # Convert COO matrix to CSR matrix and return
 
 
-print("\n*********************************")
-print("Creating doc_term matrix")
-doc_t_mtx = create_doc_term_matrix(data["Cleaned content"], cols_dict)
+def get_idf(term_idx: int, count_matrix: csr_matrix):
+    n = count_matrix.shape[0]
+    # Set of non zero docs for this term
+    docs = set(count_matrix[:, term_idx].nonzero()[0])
+    df = len(docs)
+    tsidfs = []  # List of idf for a term
+    for doc in docs:
+        # print(f"doc = {doc}")
+        tf = count_matrix[doc, term_idx]
+        # print(
+        #     f"for term {list(cols_dict.keys())[list(cols_dict.values()).index(term_idx)]}, tf = {tf}"
+        # )
+        idf = math.log((1 + n) / (1 + df), 10) + 1
+        # print(f"idf = {idf}")
+        # print(f"tf*idf = {tf*idf}")
+        tsidfs.append(tf * idf)
 
-# print(doc_t_mtx)
-
-
-# Saving matrix to file
-save_npz("./matrices/my_matr.npz", doc_t_mtx)
-
-doc_t_mtx = load_npz("./matrices/my_matr.npz")
-
-# custom_pattern = r"\b[\w\.-]+\b"
-custom_pattern = r'\b\w+\b|\b\w+-\w+\b'
-
-pipe = Pipeline(
-    [
-        ("count", CountVectorizer(vocabulary=cols_dict,
-                                  token_pattern=custom_pattern
-                                  )),
-        ("tfid", TfidfTransformer()),
-    ]
-)
-
-tfidf = pipe.fit_transform([" ".join(doc) for doc in data["Listed content"]])
-# tfidf = pipe.fit_transform(data["Cleaned content"])
-# print(
-#     f"Fitted pipeline on 'data['Cleaned content']' and obtained the following tfidf of shape {tfidf.shape}:"
-# )
-# print(tfidf.toarray())
-
-print("pipe['count'].transform(data['Cleaned content'])")
-true_doc_term_matrix = pipe["count"].transform(data["Cleaned content"])
-print(true_doc_term_matrix.toarray().shape)
-
-# Saving true matrix to file
-save_npz("./matrices/true_matr.npz", true_doc_term_matrix)
-true_doc_term_matrix = load_npz("./matrices/true_matr.npz")
-
-print(
-    f"\npipe['count'].transform(data['Cleaned content']).nnz = {pipe['count'].transform(data['Cleaned content']).nnz}"
-)
-
-# print(f"The words in the dictionary are: {pipe['count'].get_feature_names_out()[:20]}")
-
-print("\n\n Now trying manually to obtain the same count matrix\n")
+    # print(f"tsidfs = {tsidfs}")
+    return tsidfs
 
 
-# def my_count_vect(vocabulary: StringTrie, corpus: list):
-#     indices = []
-#     for d_idx, doc in enumerate(corpus):
-#         # print(f"Checking document {d_idx}")
-#         # print(f"type of doc is {type(doc)}")
-#         # print(f"First elements are {doc[:4]}")
-#         doc_trie = StringTrie.fromkeys(doc, value=1)
-#         for token in vocabulary:
-#             if doc_trie.has_key(token):
-#                 indices.append((d_idx, vocabulary[token]))
-#                 # print(f"Apparently doc {d_idx} contains '{token}'")
+def calc_tf_idf(count_matrix: csr_matrix):
+    """Calculates the tf-idf matrix given a count matrix.
+    The aim is to obtain the same results as sklearn.TfidfTransformer
+    Returns sparse matrix.
 
-#     print(f"\nlen(indices) = {len(indices)}")
+    Keyword arguments
+    count_matrix -- Term frequency csr matrix
+    """
+    tuples = []
+    n_terms = count_matrix.shape[1]
+    for term in range(n_terms):
+        idfs = get_idf(term, count_matrix)
+        docs = set(count_matrix[:, term].nonzero()[0])
+        if len(idfs) == len(docs):
+            for doc, idf in zip(docs, idfs):
+                tuples.append((doc, term, idf))
+        else:
+            print("Bad bad not good")
+        rows, cols, values = zip(*tuples)
+        temporary = coo_matrix((values, (rows, cols)))
+        normalized_matrix = normalize(temporary, norm="l2", axis=1)
+
+    print("********** PRINTING TEMPORARY CSR MATRIX ****************")
+    print(normalized_matrix.tocsr())
+    return normalized_matrix.tocsr()
 
 
-# print(
-#     f"\npipe['count'].transform(data['Cleaned content']).nnz = {true_doc_term_matrix.nnz}"
-# )
-print(f"doc_t_mtx.nnz = {doc_t_mtx.nnz}")
+def scikit_matr(dataframe: pd.DataFrame, pipeline: Pipeline):
+    """Create document/term and tfidf matrix using
+    scikit-learn CountVectorizer and TfidfTransformer.
+    Returns sparse document/term matrix, tfidf matrix and pipe object.
 
-# print(f"Also learnt the following idf of length {len(pipe['tfid'].idf_)}:")
-# print(idf)
-idf = pipe["tfid"].idf_
+    Keyword arguments:
+    dataframe --    pandas df where column "Listed content" is the one
+                    containing the list of words for each document.
+    """
 
-dd = dict(zip(pipe.get_feature_names_out(), idf))
-sorted_dict = sorted(dd, key=dd.get)
+    tfidf = pipe.fit_transform([" ".join(doc) for doc in dataframe["Listed content"]])
+    doc_t_matrix = pipe["count"].transform(dataframe["Cleaned content"])
+    return doc_t_matrix, tfidf
 
 
 # Function that prints the sparse matrix differences:
 def print_sparse_matrix_difference(matrix1, matrix2, dictionary: dict):
-    # Find the non-zero elements and their coordinates for both matrices
-    rows1, cols1, values1 = find(matrix1)
-    rows2, cols2, values2 = find(matrix2)
-
     counter = 0
+    rows1, cols1, values1 = find(
+        matrix1
+    )  # Find non-zero elements and their coordinates
+    rows2, cols2, values2 = find(matrix2)
+    set1 = set(zip(rows1, cols1, values1))
+    set2 = set(zip(rows2, cols2, values2))
 
-    # Create sets of tuples representing the coordinates of non-zero elements
-    set1 = set(zip(rows1, cols1))
-    set2 = set(zip(rows2, cols2))
-
-    # Find the differences between the two sets
+    num_elements_to_print = 10
+    list1 = sorted(set1)
+    list2 = sorted(set2)
+    # Print the specified number of elements
+    for i in range(min(num_elements_to_print, len(list1))):
+        print(f"set1[i] = {list1[i]} \t set2[i] = {list2[i]}")
     differences = set1.symmetric_difference(set2)
-
+    # Find the differences between the two sets
     # Print the differences along with the corresponding values
     for diff in differences:
-        row, col = diff
+        row, col, _ = diff
         value1 = matrix1[row, col] if diff in set1 else 0
         value2 = matrix2[row, col] if diff in set2 else 0
-        if row == 210:
-            print(
-                f"({row}, {col}) \t term '{list(dictionary.keys())[list(dictionary.values()).index(col)]}': \t\t\t\t Matrix1 = {value1},\t Matrix2 = {value2}"
-            )
+        # print(f"At position ({row}, {col}): Matrix1 value = {value1}, Matrix2 value = {value2}")
         counter += 1
 
-    return counter
+    print(f"\n#Differences = {counter}\n")
 
 
-counts = print_sparse_matrix_difference(true_doc_term_matrix, doc_t_mtx, cols_dict)
+print("\n*****************************************************")
 
-print(f"\n#Differences = {counts}")
-print(
-    f"\npipe['count'].transform(data['Cleaned content']).nnz = {true_doc_term_matrix.nnz}"
+custom_pattern = r"\b\w+\b|\b\w+-\w+\b"
+pipe = Pipeline(
+    [
+        (
+            "count",
+            CountVectorizer(vocabulary=cols_dict, token_pattern=custom_pattern),
+        ),
+        ("tfidf", TfidfTransformer()),
+    ]
 )
-print(f"doc_t_mtx.nnz = {doc_t_mtx.nnz}")
-
-print(f"word index of 6,000 = {np.where(pipe["count"].get_feature_names_out() == '6,000')}")
-print(type(pipe["count"].get_feature_names_out()))
 
 
-#**************************************************************************************
+def load_all_matrices():
+    doc_t_mtx = load_npz("./matrices/my_dt.npz")
+    print("Loaded term count matrix from './matrices/my_dt.npz'")
+    true_doc_t_mtx = load_npz("./matrices/true_dt.npz")
+    print("Loaded true doc-term matrix from './matrices/true_dt.npz'")
+    # TF-IDF matrices
+    my_tfidf = load_npz("./matrices/my_tfidf.npz")
+    print("Loaded tf-idf matrix from './matrices/my_tfidf.npz'")
+    tfidf = load_npz("./matrices/true_tfidf.npz")
+    print("Loaded true tfidf matrix from './matrices/true_tfidf.npz'")
+
+    return doc_t_mtx, true_doc_t_mtx, my_tfidf, tfidf
+
+
+if args.load_matrices:
+    doc_t_mtx, true_doc_term_matrix, my_tfidf, tfidf = load_all_matrices()
+
+    if args.compare_matrices:
+        print("Set to matrix compare mode.")
+        print(
+            f"Custom document/term matrix number of non-zero elements: {doc_t_mtx.nnz}"
+        )
+        print(
+            f"\npipe['count'].transform(data['Cleaned content']) number of non-zero elements: {true_doc_term_matrix.nnz}"
+        )
+        print_sparse_matrix_difference(true_doc_term_matrix, doc_t_mtx, cols_dict)
+        # TF-IDF matrix comparison
+        print_sparse_matrix_difference(tfidf, my_tfidf, cols_dict)
+        print(my_tfidf)
+        print(tfidf)
+
+else:
+    if args.compare_matrices:
+        print("Set to matrix compare mode.")
+
+    if args.sklearn or args.compare_matrices:
+        print("Using scikit-learn library.")
+        print("Creating document/term matrix...\n")
+        true_doc_term_matrix, tfidf = scikit_matr(dataframe=data, pipeline=pipe)
+        save_npz(
+            "./matrices/true_dt.npz", true_doc_term_matrix
+        )  # Saving true matrix to file
+        print("Saved doc/term matrix to './matrices/true_dt.npz'")
+        save_npz("./matrices/true_tfidf.npz", tfidf)
+
+        idf = pipe["tfidf"].idf_
+        dd = dict(zip(pipe.get_feature_names_out(), idf))
+        sorted_dict = sorted(dd, key=dd.get)
+
+    if not args.sklearn or args.compare_matrices:
+        print("Creating document/term matrix...\n")
+        doc_t_mtx = create_doc_term_matrix(data["Cleaned content"], cols_dict)
+        save_npz("./matrices/my_dt.npz", doc_t_mtx)  # Saving matrix to file
+        print("Saved matrix to './matrices/my_dt.npz'")
+
+        print("\nUsing custom algorithm to calculate tf-idf")
+        my_tfidf = calc_tf_idf(doc_t_mtx)
+        save_npz("./matrices/my_tfidf.npz", my_tfidf)  # Saving matrix to file
+        print("Saved matrix to './matrices/my_tfidf.npz'")
+
+        print(f"tfidf = \n {my_tfidf}")
+
+
+# **************************************************************************************
 
 # Latent Semantic Analysis
 # documentation states that for LSA n_components should be 100
@@ -333,7 +420,7 @@ print("Created latent semantic analysis model")
 
 # print(f"tf_transformer.feature_names_in: {tf_transformer.feature_names_in_}")
 # print(f"tf_transformer.get_feature_names_out(): {pipe.get_feature_names_out()}")
-
+pipe.fit([" ".join(doc) for doc in data["Listed content"]])
 vocab = pipe.get_feature_names_out()
 
 for i, comp in enumerate(lsa_model.components_):
