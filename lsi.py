@@ -6,7 +6,6 @@ import argparse
 import math
 import pandas as pd
 import numpy as np
-from pygtrie import StringTrie
 from numpy.linalg import norm
 from collections import Counter
 from scipy.sparse import csr_matrix, coo_matrix, find, save_npz, load_npz
@@ -52,6 +51,12 @@ parser.add_argument(
     action="store_true",
     help="""Use both scikit-learn library and custom 
                                                                              methods to create matrices and compare them.""",
+)
+parser.add_argument(
+    "-v",
+    "--verbose",
+    action="store_true",
+    help="Print additional information during run time.",
 )
 args = parser.parse_args()
 
@@ -164,10 +169,10 @@ def preprocess_time_data(docs_list):
 
 
 data = preprocess_time_data(docs_list=documents_list)
-
-
 data = str_df_to_lst_df(data)
-print("Created dataframe 'data'\n")
+
+if args.verbose:
+    print("Finished loading data and created dataframe.")
 
 # Now it feels like a good time to make a dictionary of all the words in the corpus
 
@@ -177,27 +182,26 @@ words = [
 ]
 word_counts = Counter(words)
 cols_dict = {word: idx for idx, (word, _) in enumerate(word_counts.items())}
+if args.verbose:
+    print(f"Created dictionary of length {len(cols_dict)}")
 
-print(f"Created dictionary of length {len(cols_dict)}")
 
-
-def count_words(sentence):
+def count_words(sentence: str):
+    """"Counts the number of appearances of each word in a sentence.
+        Returns a dictionary with the words as keys and the number of appearances as values.
+    
+    Keyword arguments:
+    sentence -- string
+    """
     counter_dict = {}
-
-    # Split the sentence into words
     words = re.findall(r"\b[\w-]+\b", sentence)
-
-    # Process each word
     for word in words:
-        # Remove leading and trailing punctuation
-        word = word.strip(string.punctuation)
-
+        word = word.strip(string.punctuation)   # Remove leading and trailing punctuation
         # Split words containing hyphens
         if "-" in word:
             subwords = word.split("-")
             for subword in subwords:
                 counter_dict[subword] = counter_dict.get(subword, 0) + 1
-
         else:
             counter_dict[word] = counter_dict.get(word, 0) + 1
 
@@ -232,6 +236,12 @@ def create_doc_term_matrix(corpus: list, mapper_dictionary: dict):
 
 
 def get_idf(term_idx: int, count_matrix: csr_matrix):
+    """Calculates the idf for a term given its index in the count matrix.
+    
+    Keyword arguments:
+    term_idx -- index of the term in the count matrix
+    count_matrix -- Term frequency csr matrix
+    """
     n = count_matrix.shape[0]
     # Set of non zero docs for this term
     docs = set(count_matrix[:, term_idx].nonzero()[0])
@@ -260,22 +270,25 @@ def calc_tf_idf(count_matrix: csr_matrix):
     Keyword arguments
     count_matrix -- Term frequency csr matrix
     """
+    if args.verbose:
+        print("\nYou've chosen the extremely slow algorithm... this is going to take a while.")
     tuples = []
     n_terms = count_matrix.shape[1]
     for term in range(n_terms):
+        if args.verbose:
+            if term % 100 == 0:
+                print(f"Current term: {term}/{n_terms}")
         idfs = get_idf(term, count_matrix)
         docs = set(count_matrix[:, term].nonzero()[0])
         if len(idfs) == len(docs):
             for doc, idf in zip(docs, idfs):
                 tuples.append((doc, term, idf))
         else:
-            print("Bad bad not good")
+            print("ERROR inside 'calc_tf_idf' -> len(idfs) != len(docs)")
         rows, cols, values = zip(*tuples)
         temporary = coo_matrix((values, (rows, cols)))
         normalized_matrix = normalize(temporary, norm="l2", axis=1)
 
-    print("********** PRINTING TEMPORARY CSR MATRIX ****************")
-    print(normalized_matrix.tocsr())
     return normalized_matrix.tocsr()
 
 
@@ -294,8 +307,13 @@ def scikit_matr(dataframe: pd.DataFrame, pipeline: Pipeline):
     return doc_t_matrix, tfidf
 
 
-# Function that prints the sparse matrix differences:
-def print_sparse_matrix_difference(matrix1, matrix2, dictionary: dict):
+def print_sparse_matrix_difference(matrix1: csr_matrix, matrix2: csr_matrix):
+    """Prints differenecs between two sparse matrices.
+
+    Keyword arguments:
+    matrix1 -- First sparse matrix
+    matrix2 -- Second sparse matrix
+    """
     counter = 0
     rows1, cols1, values1 = find(
         matrix1
@@ -304,12 +322,14 @@ def print_sparse_matrix_difference(matrix1, matrix2, dictionary: dict):
     set1 = set(zip(rows1, cols1, values1))
     set2 = set(zip(rows2, cols2, values2))
 
-    num_elements_to_print = 10
+    num_elements_to_print = 15
     list1 = sorted(set1)
     list2 = sorted(set2)
-    # Print the specified number of elements
-    for i in range(min(num_elements_to_print, len(list1))):
-        print(f"set1[i] = {list1[i]} \t set2[i] = {list2[i]}")
+    if args.verbose:
+        print("\tFirst 15 elements for each matrix.")
+        for i in range(min(num_elements_to_print, len(list1))):
+            print(f"\t\tset1[i] = {list1[i]} \t set2[i] = {list2[i]}")
+
     differences = set1.symmetric_difference(set2)
     # Find the differences between the two sets
     # Print the differences along with the corresponding values
@@ -317,14 +337,13 @@ def print_sparse_matrix_difference(matrix1, matrix2, dictionary: dict):
         row, col, _ = diff
         value1 = matrix1[row, col] if diff in set1 else 0
         value2 = matrix2[row, col] if diff in set2 else 0
-        # print(f"At position ({row}, {col}): Matrix1 value = {value1}, Matrix2 value = {value2}")
-        counter += 1
+        if abs(value1 - value2) >= 0.05:
+            counter += 1
+    if args.verbose:
+        print(f"\tNumber of differences = {counter}\n")
 
-    print(f"\n#Differences = {counter}\n")
 
-
-print("\n*****************************************************")
-
+# Creating sklearn pipeline
 custom_pattern = r"\b\w+\b|\b\w+-\w+\b"
 pipe = Pipeline(
     [
@@ -338,35 +357,51 @@ pipe = Pipeline(
 
 
 def load_all_matrices():
-    doc_t_mtx = load_npz("./matrices/my_dt.npz")
-    print("Loaded term count matrix from './matrices/my_dt.npz'")
-    true_doc_t_mtx = load_npz("./matrices/true_dt.npz")
-    print("Loaded true doc-term matrix from './matrices/true_dt.npz'")
-    # TF-IDF matrices
-    my_tfidf = load_npz("./matrices/my_tfidf.npz")
-    print("Loaded tf-idf matrix from './matrices/my_tfidf.npz'")
-    tfidf = load_npz("./matrices/true_tfidf.npz")
-    print("Loaded true tfidf matrix from './matrices/true_tfidf.npz'")
+    """Function to load all sparse matrices from './matrices/'.
+    Returns the matrices in the following order:
+        doc_t_mtx, true_doc_term_matrix, my_tfidf, tfidf
+    """
+    if args.load_matrices:
+        doc_t_mtx = load_npz("./matrices/my_dt.npz")
+        true_doc_t_mtx = load_npz("./matrices/true_dt.npz")
+        # TF-IDF matrices
+        my_tfidf = load_npz("./matrices/my_tfidf.npz")
+        tfidf = load_npz("./matrices/true_tfidf.npz")
+        if args.verbose:
+            print("\tLoaded term count matrix from './matrices/my_dt.npz'")
+            print("\tLoaded true doc-term matrix from './matrices/true_dt.npz'")
+            print("\tLoaded tf-idf matrix from './matrices/my_tfidf.npz'")
+            print("\tLoaded true tfidf matrix from './matrices/true_tfidf.npz'")
 
-    return doc_t_mtx, true_doc_t_mtx, my_tfidf, tfidf
+        return doc_t_mtx, true_doc_t_mtx, my_tfidf, tfidf
+    else:
+        print("ERROR: load_all_matrices shouldn't have been called.")
+        return 0
 
 
 if args.load_matrices:
+    print("Set to load matrices mode.")
     doc_t_mtx, true_doc_term_matrix, my_tfidf, tfidf = load_all_matrices()
 
     if args.compare_matrices:
         print("Set to matrix compare mode.")
-        print(
-            f"Custom document/term matrix number of non-zero elements: {doc_t_mtx.nnz}"
-        )
-        print(
-            f"\npipe['count'].transform(data['Cleaned content']) number of non-zero elements: {true_doc_term_matrix.nnz}"
-        )
-        print_sparse_matrix_difference(true_doc_term_matrix, doc_t_mtx, cols_dict)
+        if args.verbose:
+            print(
+                f"\tCustom document/term matrix number of non-zero elements: {doc_t_mtx.nnz}"
+            )
+            print(
+                f"\tpipe['count'].transform(data['Cleaned content']) number of non-zero elements: {true_doc_term_matrix.nnz}"
+            )
+            print(
+                "\tComparing sklearn document/term sparse matrix (set1) vs custom one (set2)'"
+            )
+        print_sparse_matrix_difference(true_doc_term_matrix, doc_t_mtx)
         # TF-IDF matrix comparison
-        print_sparse_matrix_difference(tfidf, my_tfidf, cols_dict)
-        print(my_tfidf)
-        print(tfidf)
+        if args.verbose:
+            print("Comparing sklearn tf-idf matrix (set1) vs custom one (set2)")
+        print_sparse_matrix_difference(tfidf, my_tfidf)
+        print("\tNote:\tthis sounds like a terrible number but the calculated")
+        print("\t\tvalues and the sklearn ones are actually very close!")
 
 else:
     if args.compare_matrices:
@@ -376,9 +411,7 @@ else:
         print("Using scikit-learn library.")
         print("Creating document/term matrix...\n")
         true_doc_term_matrix, tfidf = scikit_matr(dataframe=data, pipeline=pipe)
-        save_npz(
-            "./matrices/true_dt.npz", true_doc_term_matrix
-        )  # Saving true matrix to file
+        save_npz("./matrices/true_dt.npz", true_doc_term_matrix)
         print("Saved doc/term matrix to './matrices/true_dt.npz'")
         save_npz("./matrices/true_tfidf.npz", tfidf)
 
@@ -389,12 +422,12 @@ else:
     if not args.sklearn or args.compare_matrices:
         print("Creating document/term matrix...\n")
         doc_t_mtx = create_doc_term_matrix(data["Cleaned content"], cols_dict)
-        save_npz("./matrices/my_dt.npz", doc_t_mtx)  # Saving matrix to file
+        save_npz("./matrices/my_dt.npz", doc_t_mtx)
         print("Saved matrix to './matrices/my_dt.npz'")
 
         print("\nUsing custom algorithm to calculate tf-idf")
         my_tfidf = calc_tf_idf(doc_t_mtx)
-        save_npz("./matrices/my_tfidf.npz", my_tfidf)  # Saving matrix to file
+        save_npz("./matrices/my_tfidf.npz", my_tfidf)
         print("Saved matrix to './matrices/my_tfidf.npz'")
 
         print(f"tfidf = \n {my_tfidf}")
@@ -406,51 +439,57 @@ else:
 # documentation states that for LSA n_components should be 100
 
 print("\n********************************************************")
-print("Latent Semantic Analysis")
-print("********************************************************\n")
+print("Latent Semantic Analysis\n")
 
 lsa_model = TruncatedSVD(
-    n_components=10, algorithm="randomized", n_iter=10, random_state=42
+    n_components=100, algorithm="randomized", n_iter=10, random_state=42
 )
+
+# sklearn's tfidf matrix is still going to be used from now on
+_, tfidf = scikit_matr(dataframe=data, pipeline=pipe)
+
+
 lsa_matrix = lsa_model.fit_transform(tfidf)
 
 print("Created latent semantic analysis model")
-# print(f"lsa_matrix:\n {lsa_matrix}")
-# print(f"lsa_matrix.shape: {lsa_matrix.shape}")
-
-# print(f"tf_transformer.feature_names_in: {tf_transformer.feature_names_in_}")
-# print(f"tf_transformer.get_feature_names_out(): {pipe.get_feature_names_out()}")
 pipe.fit([" ".join(doc) for doc in data["Listed content"]])
 vocab = pipe.get_feature_names_out()
+
+if args.verbose:
+    print(f"\tlsa_matrix:\n\t {lsa_matrix}")
+    print(f"\tlsa_matrix.shape: {lsa_matrix.shape}")
+    print(f"\ttf_transformer.get_feature_names_out(): {pipe.get_feature_names_out()}")
 
 for i, comp in enumerate(lsa_model.components_):
     vocab_comp = zip(vocab, comp)
     sorted_words = sorted(vocab_comp, key=lambda x: x[1], reverse=True)[:10]
-    # print("Topic " + str(i) + ": ")
-    # for t in sorted_words:
-    #     print(t[0], end=" ")
-    # print("\n")
+
+    if args.verbose:
+        print("\tTopic " + str(i) + " - Top 10 most important words: ")
+        for t in sorted_words:
+            print(f"{t[0]}", end=" ")
+        print("\n")
 
 
 def get_query():
+    """Gets query from user and returns it after cleaning it."""
     print("\n********************************************************")
     query_str = input("Write your free-text query: ")
     # query_str = "In a NumPy array, each row could represent a document, and columns could represent the index and similarity measure."
     query = clean_text(query_str)
-    print(f"Nice, what I'm going to use is: {query}")
+
+    if args.verbose:
+        print(f"Nice, what I'm going to use is: {query}")
     return query
 
 
 def transform_query(query):
+    """Transforms query into a vector using the pipeline"""
     query_vector = pipe.transform([query])
     print(f"query_vector: {query_vector}")
     print(f"query_vector.shape: {query_vector.shape}")
     query_lsa = lsa_model.transform(query_vector).reshape(-1)
     return query_lsa
-
-
-query = get_query()
-query_v = transform_query(query)
 
 
 def cos_similarity(v1, v2):
@@ -476,21 +515,26 @@ def ordered_measures(query_vector, docs_matr):
     return dict(sorted(scores.items()))
 
 
+def print_top_results(res_df, n_results=5):
+    print(f"\n\nTop {n_results} results:")
+    for i in range(n_results):
+        print(f"{i+1}. {res_df.iloc[i, 0]}")
+    print("\n\nDoc ID - Similarity measure")
+    print(f"{res_df.iloc[:n_results]}")
+
+    if args.verbose:
+        topn_doc_indices = res_df.iloc[:n_results, 0].index.tolist()
+        for doc in topn_doc_indices:
+            print(f"\n\n{documents_list[doc][0]}")
+            print(f"{documents_list[doc][1]}")
+
+
+query = get_query()
+query_v = transform_query(query)
+
 results = sim_measures(query_v, lsa_matrix)
 res_df = pd.DataFrame(data=results)
 res_df.columns = ["Similarity measure"]
 res_df = res_df.sort_values(by="Similarity measure", ascending=False)
 
-
-def print_top_results(res_df, n_results=5):
-    print(f"\n\nTop 3 results:")
-    for i in range(3):
-        print(f"{i+1}. {res_df.iloc[i, 0]}")
-    print(f"\n\n{res_df.iloc[:n_results]}")
-    top3_doc_indices = res_df.iloc[:n_results, 0].index.tolist()
-    for doc in top3_doc_indices:
-        print(f"\n\n{documents_list[doc][0]}")
-        print(f"{documents_list[doc][1]}")
-
-
-print_top_results(res_df, 3)
+print_top_results(res_df, 5)
