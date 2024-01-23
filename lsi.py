@@ -217,7 +217,7 @@ if args.verbose:
 
 # Tokenization and creating a dictionary
 words = [
-    word for sentence in data["Listed content"] for word in sentence if len(word) > 0
+    word for sentence in data["Listed content"] for word in sentence if len(word) > 1
 ]
 word_counts = Counter(words)
 cols_dict = {word: idx for idx, (word, _) in enumerate(word_counts.items())}
