@@ -83,6 +83,14 @@ del sw
 
 
 def remove_contractions(words: list):
+    """
+    Removes contractions from a list of words.
+
+    Keyword arguments:
+    words -- list of words to remove contractions from
+    Returns:
+    A list of words without contractions.
+    """
     # List of common English contractions
     contractions = [
         "'s",
@@ -97,22 +105,19 @@ def remove_contractions(words: list):
         "'tis",
         "'twas",
     ]
-
-    # Remove contractions
     words_without_contractions = [word for word in words if word not in contractions]
 
     return words_without_contractions
 
 
-def remove_thousands_separator(input_string):
+def remove_thousands_separator(input_string: str):
     """
     Removes commas used as thousands separators from a string when surrounded by numbers.
 
-    Parameters:
-    - input_string (str): The input string with commas as thousands separators.
-
+    Keyword arguments:
+    input_string -- The input string with commas as thousands separators.
     Returns:
-    - str: The input string with appropriate commas removed.
+    The input string with appropriate commas removed.
     """
     result = ""
     for i, char in enumerate(input_string):
@@ -128,14 +133,22 @@ def remove_thousands_separator(input_string):
     return result
 
 
-# Functions to clean the text: 1) Removal of punctuation 2) tokenization, 3) lowercasing, 4) lemmatization
-# lowercasing is necessary because this function is used for the query as well (not in TIME.ALL format)
-# This preprocessing part uses some built-in functions from nltk. The lemmatizer is from WordNet
-def clean_text(headline):
-    le = WordNetLemmatizer()
+# This preprocessing part uses some built-in functions from nltk.
+def clean_text(headline: str):
+    """
+    Cleans a string by removing punctuation, tokenizing, lowercasing,
+    lemmatizing, removal of contractions and stop words. Also removes
+    words whose length is 0.
+
+    Keyword arguments:
+    headline -- string to clean
+    Returns:
+    A string
+    """
+    le = WordNetLemmatizer()  # from WordNet
     word_tokens = word_tokenize(headline)
     word_tokens = [
-        w.lower()
+        w.lower()  # necessary because used for query too
         for w in word_tokens
         if w not in string.punctuation and w not in ["``"]
     ]
@@ -147,29 +160,55 @@ def clean_text(headline):
     return cleaned_text
 
 
-def str_to_lst(sentence):
+def str_to_lst(sentence: str):
+    """
+    Converts a string to a list of words.
+
+    Keyword arguments:
+    sentence -- string to convert
+    Returns:
+    A list of words.
+    """
     lst = sentence.split()
     lst = [word.strip(string.punctuation) for word in lst]
     return lst
 
 
-def str_df_to_lst_df(df):
+def str_df_to_lst_df(df: pd.DataFrame):
+    """
+    Converts a dataframe with a column of strings
+    to a dataframe with a column of lists.
+
+    Keyword arguments:
+    df -- dataframe to convert
+    Returns:
+    A dataframe with a column of lists.
+    """
+    # Very extremist function that only works for this specific case
     df["Listed content"] = df["Cleaned content"].apply(str_to_lst)
     return df
 
 
-def preprocess_time_data(docs_list):
+def preprocess_TIME_data(docs_list: list):
+    """
+    Preprocesses the TIME.ALL dataset.
+
+    Keyword arguments:
+    docs_list -- list of tuples of strings (headline, content)
+    Returns:
+    A dataframe with a column of strings and a column of lists.
+    """
     df = pd.DataFrame(data=docs_list)
     df.columns = ["Article", "Content"]
     df.drop(["Article"], axis=1, inplace=True)
     df["Cleaned content"] = df["Content"].apply(clean_text)
     df["Cleaned content"] = df["Cleaned content"].apply(remove_thousands_separator)
+    df = str_df_to_lst_df(df)
 
     return df
 
 
-data = preprocess_time_data(docs_list=documents_list)
-data = str_df_to_lst_df(data)
+data = preprocess_TIME_data(docs_list=documents_list)
 
 if args.verbose:
     print("Finished loading data and created dataframe.")
@@ -185,18 +224,24 @@ cols_dict = {word: idx for idx, (word, _) in enumerate(word_counts.items())}
 if args.verbose:
     print(f"Created dictionary of length {len(cols_dict)}")
 
+del word_counts
+
 
 def count_words(sentence: str):
-    """"Counts the number of appearances of each word in a sentence.
-        Returns a dictionary with the words as keys and the number of appearances as values.
-    
+    """
+    Counts the number of appearances of each word in a sentence.
+    Returns a dictionary with the words as keys and the number
+    of appearances as values.
+
     Keyword arguments:
     sentence -- string
+    Returns:
+    A dictionary
     """
     counter_dict = {}
     words = re.findall(r"\b[\w-]+\b", sentence)
     for word in words:
-        word = word.strip(string.punctuation)   # Remove leading and trailing punctuation
+        word = word.strip(string.punctuation)  # Remove leading and trailing punctuation
         # Split words containing hyphens
         if "-" in word:
             subwords = word.split("-")
@@ -209,14 +254,15 @@ def count_words(sentence: str):
 
 
 def create_doc_term_matrix(corpus: list, mapper_dictionary: dict):
-    """Calculates document (rows) - term (cols) matrix.
+    """
+    Calculates document (rows) - term (cols) matrix.
     Each cell is the number of appearances. Uses a dictionary,
     so only elements in that dictionary will be counted.
-    Returns a sparse matrix.
-
     Keyword arguments:
     corpus -- list of strings (documents)
     mapper_dictionary -- dict to assign every known word to a column
+    Returns:
+    A sparse matrix
     """
     nz_tuples = []
     for d_idx, doc in enumerate(corpus):
@@ -225,9 +271,6 @@ def create_doc_term_matrix(corpus: list, mapper_dictionary: dict):
             if word in mapper_dictionary:
                 word_index = mapper_dictionary[word]
                 nz_tuples.append((d_idx, word_index, counter_dict[word]))
-            # else:
-            #     if __debug__:
-            #         #print(f"{word} excluded because not in mapper dictionary")
 
     rows, cols, values = zip(*nz_tuples)
     temporary_matrix = coo_matrix((values, (rows, cols)))
@@ -236,11 +279,14 @@ def create_doc_term_matrix(corpus: list, mapper_dictionary: dict):
 
 
 def get_idf(term_idx: int, count_matrix: csr_matrix):
-    """Calculates the idf for a term given its index in the count matrix.
-    
+    """
+    Calculates the idf for a term given its index in the count matrix.
+
     Keyword arguments:
     term_idx -- index of the term in the count matrix
     count_matrix -- Term frequency csr matrix
+    Returns:
+    A float
     """
     n = count_matrix.shape[0]
     # Set of non zero docs for this term
@@ -248,30 +294,27 @@ def get_idf(term_idx: int, count_matrix: csr_matrix):
     df = len(docs)
     tsidfs = []  # List of idf for a term
     for doc in docs:
-        # print(f"doc = {doc}")
         tf = count_matrix[doc, term_idx]
-        # print(
-        #     f"for term {list(cols_dict.keys())[list(cols_dict.values()).index(term_idx)]}, tf = {tf}"
-        # )
-        idf = math.log((1 + n) / (1 + df), 10) + 1
-        # print(f"idf = {idf}")
-        # print(f"tf*idf = {tf*idf}")
+        idf = math.log((1 + n) / (1 + df), 10) + 1  # Formula from sklearn
         tsidfs.append(tf * idf)
 
-    # print(f"tsidfs = {tsidfs}")
     return tsidfs
 
 
 def calc_tf_idf(count_matrix: csr_matrix):
-    """Calculates the tf-idf matrix given a count matrix.
+    """
+    Calculates the tf-idf matrix given a count matrix.
     The aim is to obtain the same results as sklearn.TfidfTransformer
-    Returns sparse matrix.
 
     Keyword arguments
     count_matrix -- Term frequency csr matrix
+    Returns:
+    A sparse matrix
     """
     if args.verbose:
-        print("\nYou've chosen the extremely slow algorithm... this is going to take a while.")
+        print(
+            "\nYou've chosen the extremely slow algorithm... this is going to take a while."
+        )
     tuples = []
     n_terms = count_matrix.shape[1]
     for term in range(n_terms):
@@ -292,17 +335,17 @@ def calc_tf_idf(count_matrix: csr_matrix):
     return normalized_matrix.tocsr()
 
 
-def scikit_matr(dataframe: pd.DataFrame, pipeline: Pipeline):
+def scikit_matr(dataframe: pd.DataFrame):
     """Create document/term and tfidf matrix using
     scikit-learn CountVectorizer and TfidfTransformer.
-    Returns sparse document/term matrix, tfidf matrix and pipe object.
+    Returns sparse document/term matrix and tfidf matrix.
 
     Keyword arguments:
     dataframe --    pandas df where column "Listed content" is the one
                     containing the list of words for each document.
     """
 
-    tfidf = pipe.fit_transform([" ".join(doc) for doc in dataframe["Listed content"]])
+    tfidf = pipe.fit_transform([doc for doc in dataframe["Cleaned content"]])
     doc_t_matrix = pipe["count"].transform(dataframe["Cleaned content"])
     return doc_t_matrix, tfidf
 
@@ -446,13 +489,13 @@ lsa_model = TruncatedSVD(
 )
 
 # sklearn's tfidf matrix is still going to be used from now on
-_, tfidf = scikit_matr(dataframe=data, pipeline=pipe)
+_, tfidf = scikit_matr(dataframe=data)
 
 
 lsa_matrix = lsa_model.fit_transform(tfidf)
 
 print("Created latent semantic analysis model")
-pipe.fit([" ".join(doc) for doc in data["Listed content"]])
+pipe.fit([doc for doc in data["Cleaned content"]])
 vocab = pipe.get_feature_names_out()
 
 if args.verbose:
@@ -472,55 +515,87 @@ for i, comp in enumerate(lsa_model.components_):
 
 
 def get_query():
-    """Gets query from user and returns it after cleaning it."""
+    """
+    Gets query from user and returns it after cleaning it.
+
+    Returns:
+    A string
+    """
     print("\n********************************************************")
     query_str = input("Write your free-text query: ")
     # query_str = "In a NumPy array, each row could represent a document, and columns could represent the index and similarity measure."
     query = clean_text(query_str)
-
     if args.verbose:
         print(f"Nice, what I'm going to use is: {query}")
+
     return query
 
 
-def transform_query(query):
-    """Transforms query into a vector using the pipeline"""
+def transform_query(query: str):
+    """
+    Transforms query into a vector using the pipeline
+
+    Keyword arguments:
+    query -- string
+    Returns:
+    A vector
+    """
     query_vector = pipe.transform([query])
-    print(f"query_vector: {query_vector}")
-    print(f"query_vector.shape: {query_vector.shape}")
+    if args.verbose:
+        print(f"query_vector: {query_vector}")
+        print(f"query_vector.shape: {query_vector.shape}")
     query_lsa = lsa_model.transform(query_vector).reshape(-1)
+
     return query_lsa
 
 
-def cos_similarity(v1, v2):
+def cos_similarity(v1: np.ndarray, v2: np.ndarray):
+    """
+    Calculates the cosine similarity between two vectors.
+
+    Keyword arguments:
+    v1 -- first vector
+    v2 -- second vector
+    Returns:
+    A float
+    """
     return np.dot(v1, v2) / (norm(v1) * norm(v2))
 
 
-def sim_measures(query_vector, docs_matr):
+def sim_measures(query_vector: np.ndarray, docs_matr: np.ndarray):
+    """
+    Calculates the cosine similarity between a query vector and
+    a matrix of documents.
+
+    Keyword arguments:
+    query_vector -- vector representing the query
+    docs_matr -- matrix of documents
+    Returns:
+    A list of floats
+    """
     measures = []
     for doc in docs_matr:
         sim = cos_similarity(query_vector, doc)
         measures.append(sim)
+
     return measures
 
 
-def ordered_measures(query_vector, docs_matr):
-    measures = sim_measures(query_vector, docs_matr)
-    print(f"\n\nMeasures:\n {measures}\n")
-    scores = {}
-    for i in range(len(measures)):
-        scores[i] = measures[i]
-    print(f"\n\nscores =")
-    print(scores)
-    return dict(sorted(scores.items()))
+def print_top_results(res_df: pd.DataFrame, n_results: int = 5):
+    """
+    Prints top n_results from an ordered dataframe.
 
-
-def print_top_results(res_df, n_results=5):
-    print(f"\n\nTop {n_results} results:")
-    for i in range(n_results):
-        print(f"{i+1}. {res_df.iloc[i, 0]}")
-    print("\n\nDoc ID - Similarity measure")
+    Keyword arguments:
+    res_df -- ordered pd.Dataframe
+    n_results -- number of results to print
+    """
     print(f"{res_df.iloc[:n_results]}")
+
+    if args.verbose:
+        topn_doc_indices = res_df.iloc[:n_results, 0].index.tolist()
+        for doc in topn_doc_indices:
+            print(f"\n\n{documents_list[doc][0]}")
+            print(f"{documents_list[doc][1]}")
 
     if args.verbose:
         topn_doc_indices = res_df.iloc[:n_results, 0].index.tolist()
@@ -535,6 +610,7 @@ query_v = transform_query(query)
 results = sim_measures(query_v, lsa_matrix)
 res_df = pd.DataFrame(data=results)
 res_df.columns = ["Similarity measure"]
+res_df.index.name = "DocID"
 res_df = res_df.sort_values(by="Similarity measure", ascending=False)
 
 print_top_results(res_df, 5)
